@@ -7,9 +7,9 @@ app = Flask(__name__)
 UPLOAD_FOLDER = 'static/sheets'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-# [버전 관리 변수] v1.0.6 배포 성공 여부 식별용
-APP_VERSION = "v1.0.6"
-BUILD_DATE = "2026-06-07 21:15"
+# [버전 관리 변수] v1.0.7로 명시하여 자라기 단계 탑재 확인
+APP_VERSION = "v1.0.7"
+BUILD_DATE = "2026-06-07 21:30"
 
 HTML_TEMPLATE = """
 <!DOCTYPE html>
@@ -33,6 +33,7 @@ HTML_TEMPLATE = """
         
         .status-msg { font-weight: bold; color: #4a5568; margin: 10px 0; font-size: 14px; }
         
+        /* 공통 프리뷰 및 가이드선 레이아웃 */
         .preview-container { width: 100%; position: relative; margin: 15px 0; background: black; overflow: hidden; border-radius: 8px; display: none; }
         #previewImg { width: 100%; display: block; }
         .guide-box { position: absolute; left: 2%; right: 2%; border: 2px solid red; pointer-events: none; box-sizing: border-box; }
@@ -50,16 +51,16 @@ HTML_TEMPLATE = """
 <body>
     <div class="container">
         <div class="version-badge" title="빌드 시간: {{ build_date }}">{{ app_version }}</div>
-        <h2>🥁 드럼 악보 추출기 (듀얼 옵션 마스터)</h2>
+        <h2>🥁 드럼 악보 정밀 가공기 (v1.0.7)</h2>
         
         <div class="option-box">
-            <div class="option-title">📸 옵션 1 : 화면 캡처본(이미지들) 한방에 PDF 변환</div>
-            <input type="file" id="imageFiles" accept="image/*" multiple style="display:none;" onchange="processDirectImages()">
-            <button class="btn btn-purple" onclick="document.getElementById('imageFiles').click()">캡처 이미지 파일들 선택 (다중 선택)</button>
+            <div class="option-title">📸 옵션 1 : 화면 캡처 이미지들 한방에 크롭 변환</div>
+            <input type="file" id="imageFiles" accept="image/*" multiple style="display:none;" onchange="uploadDirectImages()">
+            <button class="btn btn-purple" onclick="document.getElementById('imageFiles').click()">캡처 이미지 파일들 일괄 선택 (다중 선택)</button>
         </div>
 
         <div class="option-box">
-            <div class="option-title">🎬 옵션 2 : 영상 업로드 후 원하는 장면 직접 추출</div>
+            <div class="option-title">🎬 옵션 2 : 영상 업로드 후 원하는 장면 지정 추출</div>
             <input type="file" id="videoFile" accept="video/*" style="display:none;" onchange="processVideoUpload()">
             <button class="btn btn-green" onclick="document.getElementById('videoFile').click()">드럼 연주 영상 파일 선택 (.mp4)</button>
         </div>
@@ -67,17 +68,20 @@ HTML_TEMPLATE = """
         <div id="status" class="status-msg">원하시는 옵션을 선택해 주세요.</div>
 
         <div class="range-group" id="controlPanel">
-            <label id="lblTime">🎬 현재 영상 위치 (초): 0초</label>
-            <input type="range" id="timeSlider" min="0" max="100" value="0" oninput="seekVideo()">
+            <div id="videoTimeContainer" style="display:none;">
+                <label id="lblTime">🎬 현재 영상 위치 (초): 0초</label>
+                <input type="range" id="timeSlider" min="0" max="100" value="0" oninput="seekVideo()">
+            </div>
 
-            <label>📐 캡처 높이 조절 (% 지점)</label>
-            <label id="lblYStart" style="font-weight:normal; color:#666;">시작 높이: 55%</label>
+            <label style="margin-top: 10px;">📐 악보 잘라내기(Crop) 범위 설정 (% 지점)</label>
+            <label id="lblYStart" style="font-weight:normal; color:#666; font-size:13px;">시작 높이: 55%</label>
             <input type="range" id="yStart" min="0" max="100" value="55" oninput="updateGuideLine()">
             
-            <label id="lblYEnd" style="font-weight:normal; color:#666;">끝 높이: 97%</label>
+            <label id="lblYEnd" style="font-weight:normal; color:#666; font-size:13px;">끝 높이: 97%</label>
             <input type="range" id="yEnd" min="0" max="100" value="97" oninput="updateGuideLine()">
             
-            <button class="btn btn-blue" id="capBtn" onclick="captureCurrentFrame()">📸 이 장면 악보 조각으로 저장</button>
+            <button class="btn btn-blue" id="capBtn" onclick="captureCurrentFrame()" style="display:none;">📸 이 장면 악보 조각으로 저장</button>
+            <button class="btn btn-purple" id="cropAllBtn" onclick="cropAndMergeImages()" style="display:none;">✂️ 설정한 범위로 모든 이미지 일괄 크롭 가공</button>
         </div>
 
         <div class="preview-container" id="previewContainer">
@@ -94,14 +98,16 @@ HTML_TEMPLATE = """
         let duration = 0;
         let capturedCount = 0;
         let savedImages = [];
+        let currentMode = ""; // "image" 또는 "video" 확인용 변수
 
-        // --- 옵션 1 : 이미지 다중 업로드 파트 ---
-        async function processDirectImages() {
+        // --- 옵션 1 : 이미지 다중 업로드 처리 ---
+        async function uploadDirectImages() {
             const fileInput = document.getElementById('imageFiles');
             if(fileInput.files.length === 0) return;
 
-            document.getElementById('status').innerText = "이미지 전송 및 배치 가공 중...";
+            document.getElementById('status').innerText = "이미지 원본 로드 중... 범위를 지정해 주세요.";
             resetGrid();
+            currentMode = "image";
 
             const formData = new FormData();
             for(let i=0; i<fileInput.files.length; i++) {
@@ -112,30 +118,60 @@ HTML_TEMPLATE = """
             const data = await response.json();
 
             if(data.success) {
+                // 첫 번째 이미지 경로를 프리뷰 창에 띄워서 범위를 잡을 수 있게 가이드 제공
+                document.getElementById('previewImg').src = "/" + data.first_image + "?t=" + new Date().getTime();
+                
+                document.getElementById('videoTimeContainer').style.display = 'none';
+                document.getElementById('controlPanel').style.display = 'block';
+                document.getElementById('previewContainer').style.display = 'block';
+                document.getElementById('cropAllBtn').style.display = 'block';
+                document.getElementById('capBtn').style.display = 'none';
+                
+                updateGuideLine();
+            } else {
+                alert('이미지 업로드 실패: ' + data.error);
+            }
+        }
+
+        // [옵션 1 핵심] 사용자가 지정한 가이드라인 비율대로 서버가 이미지 전체를 도려냄
+        async function cropAndMergeImages() {
+            const yStart = document.getElementById('yStart').value;
+            const yEnd = document.getElementById('yEnd').value;
+            document.getElementById('status').innerText = "설정하신 범위대로 전체 이미지 크롭 가공 중...";
+
+            const response = await fetch('/crop-all-images', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ y_start: yStart, y_end: yEnd })
+            });
+            const data = await response.json();
+
+            if(data.success) {
                 savedImages = data.paths;
-                document.getElementById('status').innerText = `총 ${data.paths.length}개의 캡처본 연동 완료! 바로 PDF로 저장해 보세요.`;
+                document.getElementById('status').innerText = `가공 완료! 총 ${data.paths.length}개의 정제된 악보 띠가 추출되었습니다.`;
                 
                 const grid = document.getElementById('resultGrid');
-                data.paths.forEach((path, idx) => {
+                grid.innerHTML = '';
+                data.paths.forEach((path) => {
                     const card = document.createElement('div');
                     card.className = 'sheet-card';
-                    card.id = `sheet_${idx}`;
-                    card.innerHTML = `<img src="/${path}">`;
+                    card.innerHTML = `<img src="/${path}?t=${new Date().getTime()}">`;
                     grid.appendChild(card);
                 });
                 document.getElementById('pdfBtn').style.display = 'block';
             } else {
-                alert('이미지 로드 실패: ' + data.error);
+                alert('크롭 실패');
             }
         }
 
-        // --- 옵션 2 : 비디오 연동 파트 ---
+        // --- 옵션 2 : 비디오 연동 처리 ---
         async function processVideoUpload() {
             const fileInput = document.getElementById('videoFile');
             if(fileInput.files.length === 0) return;
 
             document.getElementById('status').innerText = "영상을 로드하고 있습니다...";
             resetGrid();
+            currentMode = "video";
 
             const formData = new FormData();
             formData.append('video', fileInput.files[0]);
@@ -146,10 +182,13 @@ HTML_TEMPLATE = """
             if(data.success) {
                 duration = data.duration;
                 document.getElementById('timeSlider').max = Math.floor(duration);
-                document.getElementById('status').innerText = `영상 로드 성공! 총 길이: ${Math.floor(duration)}초`;
+                document.getElementById('status').innerText = `영상 로드 성공! 원하는 타임의 범위를 캡처하세요.`;
                 
+                document.getElementById('videoTimeContainer').style.display = 'block';
                 document.getElementById('controlPanel').style.display = 'block';
                 document.getElementById('previewContainer').style.display = 'block';
+                document.getElementById('capBtn').style.display = 'block';
+                document.getElementById('cropAllBtn').style.display = 'none';
                 
                 seekVideo();
             } else {
@@ -234,7 +273,7 @@ HTML_TEMPLATE = """
                 const url = window.URL.createObjectURL(blob);
                 const a = document.createElement('a');
                 a.href = url;
-                a.download = "drum_sheet_master.pdf";
+                a.download = "drum_sheet_processed.pdf";
                 document.body.appendChild(a);
                 a.click();
                 a.remove();
@@ -249,28 +288,52 @@ HTML_TEMPLATE = """
 def home():
     return render_template_string(HTML_TEMPLATE, app_version=APP_VERSION, build_date=BUILD_DATE)
 
-# --- 옵션 1 전용 이미지 셋 처리 엔드포인트 ---
+# --- 옵션 1 전용 처리 파트 ---
 @app.route('/upload-images', methods=['POST'])
 def upload_images():
     if 'images' not in request.files:
         return jsonify({'success': False, 'error': '파일이 없습니다.'})
     
     files = request.files.getlist('images')
-    paths = []
     
-    # 임시 폴더 클리어
+    # 임시 세션 클리어 및 업로드 이미지 정렬 처리
     for f in os.listdir(UPLOAD_FOLDER):
         try: os.remove(os.path.join(UPLOAD_FOLDER, f))
         except: pass
         
-    for idx, file in enumerate(sorted(files, key=lambda x: x.filename)):
-        path = f"{UPLOAD_FOLDER}/direct_{idx}.png"
+    # 원본 파일명 순서대로 정확하게 정렬하여 저장
+    sorted_files = sorted(files, key=lambda x: x.filename)
+    for idx, file in enumerate(sorted_files):
+        path = f"{UPLOAD_FOLDER}/raw_{idx}.png"
         file.save(path)
-        paths.append(path)
         
-    return jsonify({'success': True, 'paths': paths})
+    return jsonify({'success': True, 'first_image': f"{UPLOAD_FOLDER}/raw_0.png"})
 
-# --- 옵션 2 전용 비디오 연동 엔드포인트 ---
+@app.route('/crop-all-images', methods=['POST'])
+def crop_all_images():
+    data = request.json
+    y_start = float(data.get('y_start')) / 100.0
+    y_end = float(data.get('y_end')) / 100.0
+    
+    raw_files = sorted([f for f in os.listdir(UPLOAD_FOLDER) if f.startswith('raw_')])
+    processed_paths = []
+    
+    for idx, filename in enumerate(raw_files):
+        img_path = os.path.join(UPLOAD_FOLDER, filename)
+        img = cv2.imread(img_path)
+        if img is None: continue
+        
+        h, w, _ = img.shape
+        # 설정한 비율대로 순식간에 이미지 전체 가공 조절
+        roi = img[int(h*y_start):int(h*y_end), int(w*0.02):int(w*0.98)]
+        
+        out_path = f"{UPLOAD_FOLDER}/processed_{idx}.png"
+        cv2.imwrite(out_path, roi)
+        processed_paths.append(out_path)
+        
+    return jsonify({'success': True, 'paths': processed_paths})
+
+# --- 옵션 2 전용 처리 파트 ---
 @app.route('/upload-video', methods=['POST'])
 def upload_video():
     if 'video' not in request.files:
