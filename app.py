@@ -8,86 +8,90 @@ app = Flask(__name__)
 UPLOAD_FOLDER = 'static/sheets'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-# 아이패드 최적화: 유튜브 플레이어와 범위 슬라이더 연동 화면
+# 아이패드 최적화 UI: 유튜브 내부 다운로드 + 실시간 수동 캡처 패널
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html>
 <head>
-    <title>드럼 악보 원클릭 캡처기</title>
+    <title>드럼 악보 원스톱 캡처기</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <style>
         body { font-family: 'Malgun Gothic', sans-serif; padding: 15px; background: #f5f5f5; margin: 0; }
         .container { max-width: 700px; margin: 0 auto; background: white; padding: 20px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
-        .input-group { display: flex; gap: 10px; margin-bottom: 15px; }
+        .input-group { display: flex; gap: 10px; margin-bottom: 10px; }
         input[type="text"] { flex: 1; padding: 12px; font-size: 16px; border: 1px solid #ddd; border-radius: 8px; box-sizing: border-box; }
         .btn { padding: 12px 20px; color: white; border: none; border-radius: 8px; font-size: 15px; font-weight: bold; cursor: pointer; }
         .btn-green { background: #4CAF50; }
-        .btn-blue { width: 100%; padding: 15px; background: #2196F3; font-size: 16px; margin: 15px 0; }
-        .btn-orange { width: 100%; padding: 15px; background: #FF5722; font-size: 16px; display: none; }
+        .btn-blue { width: 100%; padding: 15px; background: #2196F3; font-size: 16px; margin-bottom: 10px; }
+        .btn-orange { width: 100%; padding: 15px; background: #FF5722; font-size: 16px; margin-top: 10px; }
         
-        /* 비디오뷰 및 가이드선 배치 */
-        .video-box { width: 100%; position: relative; background: black; border-radius: 8px; overflow: hidden; display: none; margin-bottom: 15px; }
-        video { width: 100%; display: block; }
+        .status-msg { font-weight: bold; color: #555; margin-bottom: 15px; font-size: 14px; }
+        .loading { display: none; text-align: center; font-weight: bold; color: #e91e63; margin: 15px 0; }
+
+        /* 프리뷰 및 빨간 안내선 가이드 레이아웃 */
+        .preview-container { width: 100%; position: relative; margin: 15px 0; background: black; overflow: hidden; border-radius: 8px; display: none; }
+        #previewImg { width: 100%; display: block; }
         .guide-box { position: absolute; left: 2%; right: 2%; border: 2px solid red; pointer-events: none; box-sizing: border-box; }
         
         .range-group { background: #f9f9f9; padding: 15px; border-radius: 8px; margin-bottom: 15px; border: 1px solid #e0e0e0; display: none; }
-        .range-group label { display: block; font-weight: bold; margin-bottom: 5px; font-size: 14px; }
-        .range-group input[type="range"] { width: 100%; margin-bottom: 10px; }
+        .range-group label { display: block; font-weight: bold; margin-bottom: 5px; font-size: 14px; color: #333; }
+        .range-group input[type="range"] { width: 100%; margin-bottom: 15px; }
         
         .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; margin-top: 20px; }
         .sheet-card { border: 2px solid #2196F3; border-radius: 6px; overflow: hidden; background: #fff; position: relative; }
         .sheet-card img { width: 100%; display: block; }
         .btn-delete { position: absolute; top: 5px; right: 5px; background: rgba(255,0,0,0.8); color: white; border: none; border-radius: 4px; padding: 3px 6px; font-size: 11px; cursor: pointer; }
-        .loading { display: none; text-align: center; font-weight: bold; color: #666; margin: 10px 0; }
     </style>
 </head>
 <body>
     <div class="container">
-        <h2>🥁 유튜브 드럼 악보 캡처기 (iPad 지원)</h2>
+        <h2>🥁 유튜브 악보 원스톱 캡처기 (iPad 우회형)</h2>
         
         <div class="input-group">
-            <input type="text" id="ytUrl" placeholder="유튜브 영상 주소를 붙여넣으세요">
-            <button class="btn btn-green" onclick="loadYoutubeVideo()">영상 불러오기</button>
+            <input type="text" id="ytUrl" placeholder="유튜브 악보 영상 주소를 붙여넣으세요">
+            <button class="btn btn-green" onclick="downloadAndLoadVideo()">1. 영상 분석 시작</button>
         </div>
-        <div class="loading" id="loading">🎬 유튜브 스트림 분석 중... (약 5~10초 소요)</div>
+        <div class="loading" id="loading">📥 유튜브 차단 우회 및 고속 다운로드 가동 중... (약 20~40초 소요)</div>
+        <div id="status" class="status-msg">유튜브 링크를 입력하거나 영상을 준비해 주세요.</div>
 
-        <div class="video-box" id="videoBox">
-            <video id="mainVideo" controls playsinline crossorigin="anonymous"></video>
-            <div class="guide-box" id="guideBox"></div>
-        </div>
+        <div class="range-group" id="controlPanel">
+            <label id="lblTime">🎬 현재 영상 위치: 0초</label>
+            <input type="range" id="timeSlider" min="0" max="100" value="0" oninput="seekVideo()">
 
-        <div class="range-group" id="rangePanel">
             <label>📐 캡처 높이 조절 (% 지점)</label>
-            <label id="lblYStart" style="font-weight:normal; color:#666; font-size:13px;">시작 높이: 55%</label>
+            <label id="lblYStart" style="font-weight:normal; color:#666;">시작 높이: 55%</label>
             <input type="range" id="yStart" min="0" max="100" value="55" oninput="updateGuideLine()">
             
-            <label id="lblYEnd" style="font-weight:normal; color:#666; font-size:13px;">끝 높이: 97%</label>
+            <label id="lblYEnd" style="font-weight:normal; color:#666;">끝 높이: 97%</label>
             <input type="range" id="yEnd" min="0" max="100" value="97" oninput="updateGuideLine()">
         </div>
 
-        <button class="btn btn-blue" id="capBtn" style="display:none;" onclick="captureCurrentFrame()">📸 현재 재생 장면 악보로 저장</button>
+        <div class="preview-container" id="previewContainer">
+            <img id="previewImg" src="">
+            <div class="guide-box" id="guideBox"></div>
+        </div>
+
+        <button class="btn btn-blue" id="capBtn" style="display:none;" onclick="captureCurrentFrame()">📸 이 장면 악보로 저장</button>
         
         <div class="grid" id="resultGrid"></div>
         
-        <button class="btn btn-orange" id="pdfBtn" onclick="generatePDF()">📄 저장한 악보 A4 PDF로 다운로드</button>
+        <button class="btn btn-orange" id="pdfBtn" style="display:none;" onclick="generatePDF()">📄 저장한 악보 A4 PDF로 다운로드</button>
     </div>
 
     <script>
+        let duration = 0;
         let capturedCount = 0;
         let savedImages = [];
-        let currentStreamUrl = "";
 
-        // 유튜브 링크로부터 안전한 재생 주소를 파싱해 옴
-        async function loadYoutubeVideo() {
+        // 주소를 넣으면 서버가 백그라운드에서 다운로드 후 즉시 프레임 탐색기로 넘겨줌
+        async function downloadAndLoadVideo() {
             const url = document.getElementById('ytUrl').value;
             if(!url) return alert('유튜브 주소를 입력해 주세요.');
 
             document.getElementById('loading').style.display = 'block';
-            document.getElementById('videoBox').style.display = 'none';
-            document.getElementById('rangePanel').style.display = 'none';
-            document.getElementById('capBtn').style.display = 'none';
-
-            const response = await fetch('/stream-url', {
+            document.getElementById('status').innerText = "유튜브 서버로부터 다이렉트 mp4 전환 중...";
+            
+            const response = await fetch('/download-yt', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ url: url })
@@ -96,19 +100,33 @@ HTML_TEMPLATE = """
             document.getElementById('loading').style.display = 'none';
 
             if(data.success) {
-                currentStreamUrl = data.stream_url;
-                const video = document.getElementById('mainVideo');
-                video.src = data.stream_url;
+                duration = data.duration;
+                document.getElementById('timeSlider').max = Math.floor(duration);
+                document.getElementById('status').innerText = `전환 완료! 총 길이: ${Math.floor(duration)}초`;
                 
-                document.getElementById('videoBox').style.display = 'block';
-                document.getElementById('rangePanel').style.display = 'block';
+                // 패널들 즉시 활성화
+                document.getElementById('controlPanel').style.display = 'block';
+                document.getElementById('previewContainer').style.display = 'block';
                 document.getElementById('capBtn').style.display = 'block';
                 
-                video.load();
-                updateGuideLine();
+                seekVideo(); // 첫 프레임 표출
             } else {
-                alert('영상 주소 추출 실패: ' + data.error);
+                document.getElementById('status').innerText = "오류 발생";
+                alert('영상 가져오기 실패 (유튜브 보안 필터 우회 재시도가 필요합니다): ' + data.error);
             }
+        }
+
+        async function seekVideo() {
+            const sec = document.getElementById('timeSlider').value;
+            document.getElementById('lblTime').innerText = `🎬 현재 영상 위치 (초): ${sec}초`;
+
+            const response = await fetch(`/get-frame?sec=${sec}`);
+            const blob = await response.blob();
+            
+            const imgUrl = window.URL.createObjectURL(blob);
+            document.getElementById('previewImg').src = imgUrl;
+            
+            updateGuideLine();
         }
 
         function updateGuideLine() {
@@ -123,23 +141,15 @@ HTML_TEMPLATE = """
             guideBox.style.height = (yEnd - yStart) + '%';
         }
 
-        // 아이패드에서 보던 시간대의 화면을 서버가 즉각 스냅샷 크롭 가공
         async function captureCurrentFrame() {
-            const video = document.getElementById('mainVideo');
-            const currentTime = video.currentTime;
+            const sec = document.getElementById('timeSlider').value;
             const yStart = document.getElementById('yStart').value;
             const yEnd = document.getElementById('yEnd').value;
 
-            const response = await fetch('/capture-frame', {
+            const response = await fetch('/capture', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    stream_url: currentStreamUrl,
-                    sec: currentTime,
-                    y_start: yStart,
-                    y_end: yEnd,
-                    count: capturedCount
-                })
+                body: JSON.stringify({ sec: sec, y_start: yStart, y_end: yEnd, count: capturedCount })
             });
             const data = await response.json();
 
@@ -158,8 +168,6 @@ HTML_TEMPLATE = """
                 
                 capturedCount++;
                 document.getElementById('pdfBtn').style.display = 'block';
-            } else {
-                alert('캡처에 실패했습니다.');
             }
         }
 
@@ -196,34 +204,66 @@ HTML_TEMPLATE = """
 def home():
     return render_template_string(HTML_TEMPLATE)
 
-@app.route('/stream-url', methods=['POST'])
-def get_stream_url():
+@app.route('/download-yt', methods=['POST'])
+def download_yt():
     data = request.json
     url = data.get('url')
+    video_path = 'uploaded_video.mp4'
     
-    # yt-dlp를 이용해 영상은 안 받되 브라우저 로딩용 스트림 재생 주소만 신속 가공
+    if os.path.exists(video_path):
+        try: os.remove(video_path)
+        except: pass
+
+    # 유튜브의 차단 단속을 우회하기 위해 인코딩 480p로 압축하여 초고속 우회 다운로드 시도
     ydl_opts = {
-        'format': 'bestvideo[ext=mp4][height<=720]/best[ext=mp4]',
+        'format': 'bestvideo[ext=mp4][height<=480]+bestaudio[ext=m4a]/best[ext=mp4][height<=480]',
+        'outtmpl': video_path,
         'quiet': True,
-        'noplaylist': True
+        'noplaylist': True,
     }
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            return jsonify({'success': True, 'stream_url': info['url']})
+            ydl.download([url])
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
 
-@app.route('/capture-frame', methods=['POST'])
-def capture_frame():
+    cap = cv2.VideoCapture(video_path)
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    total_frames = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+    duration = total_frames / fps if fps > 0 else 0
+    cap.release()
+    
+    for f in os.listdir(UPLOAD_FOLDER):
+        try: os.remove(os.path.join(UPLOAD_FOLDER, f))
+        except: pass
+        
+    return jsonify({'success': True, 'duration': duration})
+
+@app.route('/get-frame', methods=['GET'])
+def get_frame():
+    sec = float(request.args.get('sec', 0))
+    cap = cv2.VideoCapture('uploaded_video.mp4')
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    
+    cap.set(cv2.CAP_PROP_POS_FRAMES, int(fps * sec))
+    ret, frame = cap.read()
+    cap.release()
+    
+    if ret:
+        frame_resized = cv2.resize(frame, (854, 480))
+        _, img_encoded = cv2.imencode('.jpg', frame_resized)
+        return img_encoded.tobytes(), 200, {'Content-Type': 'image/jpeg'}
+    return '실패', 400
+
+@app.route('/capture', methods=['POST'])
+def capture():
     data = request.json
-    stream_url = data.get('stream_url')
     sec = float(data.get('sec'))
     y_start = float(data.get('y_start')) / 100.0
     y_end = float(data.get('y_end')) / 100.0
     count = data.get('count')
     
-    cap = cv2.VideoCapture(stream_url)
+    cap = cv2.VideoCapture('uploaded_video.mp4')
     fps = cap.get(cv2.CAP_PROP_FPS)
     cap.set(cv2.CAP_PROP_POS_FRAMES, int(fps * sec))
     ret, frame = cap.read()
