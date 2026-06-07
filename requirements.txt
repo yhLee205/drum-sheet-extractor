@@ -1,0 +1,6 @@
+Flask==3.0.2
+opencv-python-headless==4.9.0.80
+pillow==10.2.0
+yt-dlp==2024.3.10
+scikit-image==0.22.0
+gunicorn==21.2.0
