@@ -1,6 +1,5 @@
 import os
 import cv2
-import yt_dlp
 from flask import Flask, render_template_string, request, send_file, jsonify
 from PIL import Image
 
@@ -8,7 +7,10 @@ app = Flask(__name__)
 UPLOAD_FOLDER = 'static/sheets'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-# 아이패드 최적화 UI: 유튜브 내부 다운로드 + 실시간 수동 캡처 패널
+# [버전 및 빌드 관리] 업데이트 여부를 확인하기 위해 띄우는 배지 변수
+APP_VERSION = "v1.0.3"
+BUILD_DATE = "2026-06-07 20:45"
+
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html>
@@ -17,18 +19,19 @@ HTML_TEMPLATE = """
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <style>
         body { font-family: 'Malgun Gothic', sans-serif; padding: 15px; background: #f5f5f5; margin: 0; }
-        .container { max-width: 700px; margin: 0 auto; background: white; padding: 20px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
-        .input-group { display: flex; gap: 10px; margin-bottom: 10px; }
-        input[type="text"] { flex: 1; padding: 12px; font-size: 16px; border: 1px solid #ddd; border-radius: 8px; box-sizing: border-box; }
-        .btn { padding: 12px 20px; color: white; border: none; border-radius: 8px; font-size: 15px; font-weight: bold; cursor: pointer; }
+        .container { max-width: 700px; margin: 0 auto; background: white; padding: 20px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); position: relative; }
+        
+        /* 버전 표시 배지 */
+        .version-badge { position: absolute; top: 15px; right: 20px; background: #e0e0e0; color: #555; padding: 4px 8px; border-radius: 6px; font-size: 11px; font-weight: bold; }
+        
+        .btn { width: 100%; padding: 14px; color: white; border: none; border-radius: 8px; font-size: 16px; font-weight: bold; cursor: pointer; margin-bottom: 15px; margin-top: 15px; }
         .btn-green { background: #4CAF50; }
-        .btn-blue { width: 100%; padding: 15px; background: #2196F3; font-size: 16px; margin-bottom: 10px; }
-        .btn-orange { width: 100%; padding: 15px; background: #FF5722; font-size: 16px; margin-top: 10px; }
+        .btn-blue { background: #2196F3; margin-top: 5px; margin-bottom: 10px; }
+        .btn-orange { background: #FF5722; }
         
         .status-msg { font-weight: bold; color: #555; margin-bottom: 15px; font-size: 14px; }
-        .loading { display: none; text-align: center; font-weight: bold; color: #e91e63; margin: 15px 0; }
-
-        /* 프리뷰 및 빨간 안내선 가이드 레이아웃 */
+        
+        /* 프리뷰 박스 및 빨간색 범위 가이드 라인 */
         .preview-container { width: 100%; position: relative; margin: 15px 0; background: black; overflow: hidden; border-radius: 8px; display: none; }
         #previewImg { width: 100%; display: block; }
         .guide-box { position: absolute; left: 2%; right: 2%; border: 2px solid red; pointer-events: none; box-sizing: border-box; }
@@ -45,17 +48,16 @@ HTML_TEMPLATE = """
 </head>
 <body>
     <div class="container">
-        <h2>🥁 유튜브 악보 원스톱 캡처기 (iPad 우회형)</h2>
+        <div class="version-badge" title="빌드 시간: {{ build_date }}">{{ app_version }}</div>
+
+        <h2>🥁 드럼 악보 정밀 캡처기</h2>
         
-        <div class="input-group">
-            <input type="text" id="ytUrl" placeholder="유튜브 악보 영상 주소를 붙여넣으세요">
-            <button class="btn btn-green" onclick="downloadAndLoadVideo()">1. 영상 분석 시작</button>
-        </div>
-        <div class="loading" id="loading">📥 유튜브 차단 우회 및 고속 다운로드 가동 중... (약 20~40초 소요)</div>
-        <div id="status" class="status-msg">유튜브 링크를 입력하거나 영상을 준비해 주세요.</div>
+        <input type="file" id="videoFile" accept="video/*" style="display:none;" onchange="uploadVideo()">
+        <button class="btn btn-green" onclick="document.getElementById('videoFile').click()">1. 다운로드한 드럼 영상 파일 선택 (.mp4)</button>
+        <div id="status" class="status-msg">아이패드나 컴퓨터에 소장 중인 영상을 넣어주세요.</div>
 
         <div class="range-group" id="controlPanel">
-            <label id="lblTime">🎬 현재 영상 위치: 0초</label>
+            <label id="lblTime">🎬 현재 영상 위치 (초): 0초</label>
             <input type="range" id="timeSlider" min="0" max="100" value="0" oninput="seekVideo()">
 
             <label>📐 캡처 높이 조절 (% 지점)</label>
@@ -83,36 +85,29 @@ HTML_TEMPLATE = """
         let capturedCount = 0;
         let savedImages = [];
 
-        // 주소를 넣으면 서버가 백그라운드에서 다운로드 후 즉시 프레임 탐색기로 넘겨줌
-        async function downloadAndLoadVideo() {
-            const url = document.getElementById('ytUrl').value;
-            if(!url) return alert('유튜브 주소를 입력해 주세요.');
+        async function uploadVideo() {
+            const fileInput = document.getElementById('videoFile');
+            if(fileInput.files.length === 0) return;
 
-            document.getElementById('loading').style.display = 'block';
-            document.getElementById('status').innerText = "유튜브 서버로부터 다이렉트 mp4 전환 중...";
-            
-            const response = await fetch('/download-yt', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ url: url })
-            });
+            document.getElementById('status').innerText = "서버가 영상 데이터를 연동하고 있습니다...";
+            const formData = new FormData();
+            formData.append('video', fileInput.files[0]);
+
+            const response = await fetch('/upload', { method: 'POST', body: formData });
             const data = await response.json();
-            document.getElementById('loading').style.display = 'none';
 
             if(data.success) {
                 duration = data.duration;
                 document.getElementById('timeSlider').max = Math.floor(duration);
-                document.getElementById('status').innerText = `전환 완료! 총 길이: ${Math.floor(duration)}초`;
+                document.getElementById('status').innerText = `연동 성공! 총 길이: ${Math.floor(duration)}초`;
                 
-                // 패널들 즉시 활성화
                 document.getElementById('controlPanel').style.display = 'block';
                 document.getElementById('previewContainer').style.display = 'block';
                 document.getElementById('capBtn').style.display = 'block';
                 
-                seekVideo(); // 첫 프레임 표출
+                seekVideo();
             } else {
-                document.getElementById('status').innerText = "오류 발생";
-                alert('영상 가져오기 실패 (유튜브 보안 필터 우회 재시도가 필요합니다): ' + data.error);
+                alert('영상 파일 분석 실패: ' + data.error);
             }
         }
 
@@ -189,7 +184,7 @@ HTML_TEMPLATE = """
                 const url = window.URL.createObjectURL(blob);
                 const a = document.createElement('a');
                 a.href = url;
-                a.download = "drum_sheets.pdf";
+                a.download = "drum_sheets_v103.pdf";
                 document.body.appendChild(a);
                 a.click();
                 a.remove();
@@ -202,31 +197,17 @@ HTML_TEMPLATE = """
 
 @app.route('/')
 def home():
-    return render_template_string(HTML_TEMPLATE)
+    return render_template_string(HTML_TEMPLATE, app_version=APP_VERSION, build_date=BUILD_DATE)
 
-@app.route('/download-yt', methods=['POST'])
-def download_yt():
-    data = request.json
-    url = data.get('url')
-    video_path = 'uploaded_video.mp4'
+@app.route('/upload', methods=['POST'])
+def upload_video():
+    if 'video' not in request.files:
+        return jsonify({'success': False, 'error': '파일이 누락되었습니다.'})
     
-    if os.path.exists(video_path):
-        try: os.remove(video_path)
-        except: pass
-
-    # 유튜브의 차단 단속을 우회하기 위해 인코딩 480p로 압축하여 초고속 우회 다운로드 시도
-    ydl_opts = {
-        'format': 'bestvideo[ext=mp4][height<=480]+bestaudio[ext=m4a]/best[ext=mp4][height<=480]',
-        'outtmpl': video_path,
-        'quiet': True,
-        'noplaylist': True,
-    }
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url])
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)})
-
+    file = request.files['video']
+    video_path = 'uploaded_video.mp4'
+    file.save(video_path)
+    
     cap = cv2.VideoCapture(video_path)
     fps = cap.get(cv2.CAP_PROP_FPS)
     total_frames = cap.get(cv2.CAP_PROP_FRAME_COUNT)
